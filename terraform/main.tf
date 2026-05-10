@@ -14,15 +14,15 @@ provider "cloudflare" {
 
 # ─── Tunnel ─────────────────────────────────────────────────────────
 
-resource "cloudflare_zero_trust_tunnel_cloudflared" "jack_site" {
+resource "cloudflare_zero_trust_tunnel_cloudflared" "kelliher_web" {
   account_id = var.cloudflare_account_id
-  name       = "jack-kelliher-info"
+  name       = "kelliher-web"
   config_src = "cloudflare"
 }
 
-data "cloudflare_zero_trust_tunnel_cloudflared_token" "jack_site" {
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "kelliher_web" {
   account_id = var.cloudflare_account_id
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.jack_site.id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id
 }
 
 # ─── DNS ────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "jack_site" {
 resource "cloudflare_dns_record" "jack" {
   zone_id = var.cloudflare_zone_id
   name    = "jack"
-  content = "${cloudflare_zero_trust_tunnel_cloudflared.jack_site.id}.cfargotunnel.com"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
   proxied = true
@@ -40,7 +40,7 @@ resource "cloudflare_dns_record" "jack" {
 resource "cloudflare_dns_record" "john" {
   zone_id = var.cloudflare_zone_id
   name    = "john"
-  content = "${cloudflare_zero_trust_tunnel_cloudflared.jack_site.id}.cfargotunnel.com"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
   proxied = true
@@ -49,8 +49,8 @@ resource "cloudflare_dns_record" "john" {
 
 # ─── Tunnel ingress config ──────────────────────────────────────────
 
-resource "cloudflare_zero_trust_tunnel_cloudflared_config" "jack_site" {
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.jack_site.id
+resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kelliher_web" {
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id
   account_id = var.cloudflare_account_id
   config = {
     ingress = [
@@ -72,10 +72,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "jack_site" {
 # ─── Outputs ────────────────────────────────────────────────────────
 
 output "tunnel_id" {
-  value = cloudflare_zero_trust_tunnel_cloudflared.jack_site.id
+  value = cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id
 }
 
 output "tunnel_token" {
-  value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.jack_site.token
+  value     = data.cloudflare_zero_trust_tunnel_cloudflared_token.kelliher_web.token
   sensitive = true
 }

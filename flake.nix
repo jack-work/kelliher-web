@@ -1,9 +1,10 @@
 {
-  description = "jack.kelliher.info — personal business card site";
+  description = "kelliher-web — shared web hosting infrastructure for *.kelliher.info";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    jack-site.url = "github:jack-work/jack.kelliher.info";
   };
 
   outputs =
@@ -11,10 +12,10 @@
       self,
       nixpkgs,
       flake-utils,
+      jack-site,
       ...
     }:
     let
-      # NixOS module — import this in your system flake
       nixosModule =
         {
           config,
@@ -23,87 +24,145 @@
           ...
         }:
         let
-          cfg = config.services.jack-site;
-          site = self.packages.${pkgs.system}.default;
+          cfg = config.services.kelliher-web;
+
+          siteSubmodule = lib.types.submodule {
+            options = {
+              hostnames = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                description = "Hostnames to route to this site";
+              };
+
+              root = lib.mkOption {
+                type = lib.types.nullOr lib.types.package;
+                default = null;
+                description = "Nix store path for static site root";
+              };
+
+              proxyTo = lib.mkOption {
+                type = lib.types.nullOr lib.types.port;
+                default = null;
+                description = "Local port to reverse proxy to";
+              };
+
+              extraConfig = lib.mkOption {
+                type = lib.types.lines;
+                default = "";
+                description = "Extra Caddy directives for this site block";
+              };
+            };
+          };
+
+          # Generate Caddy site blocks from all registered sites
+          siteConfigs = lib.mapAttrsToList (
+            name: site:
+            let
+              matcherName = builtins.replaceStrings [ "-" ] [ "_" ] name;
+              hostMatcher = "@${matcherName} host ${lib.concatStringsSep " " site.hostnames}";
+              handler =
+                if site.root != null then
+                  ''
+                    root * ${site.root}
+                    file_server
+                  ''
+                else
+                  ''
+                    reverse_proxy localhost:${toString site.proxyTo}
+                  '';
+            in
+            ''
+              ${hostMatcher}
+              handle @${matcherName} {
+                ${handler}
+                ${site.extraConfig}
+              }
+            ''
+          ) cfg.sites;
+
+          caddyfile = pkgs.writeText "kelliher-web-Caddyfile" ''
+            :${toString cfg.port} {
+              ${lib.concatStringsSep "\n" siteConfigs}
+              log {
+                output stdout
+                format console
+              }
+            }
+          '';
+
+          hardenedServiceConfig = {
+            ProtectHome = true;
+            PrivateTmp = true;
+            NoNewPrivileges = true;
+            ProtectSystem = "strict";
+            PrivateDevices = true;
+            PrivateUsers = true;
+            ProtectKernelTunables = true;
+            ProtectKernelModules = true;
+            ProtectKernelLogs = true;
+            ProtectControlGroups = true;
+            RestrictAddressFamilies = [
+              "AF_INET"
+              "AF_INET6"
+            ];
+            RestrictNamespaces = true;
+            RestrictRealtime = true;
+            RestrictSUIDSGID = true;
+            LockPersonality = true;
+            MemoryDenyWriteExecute = true;
+            SystemCallFilter = [ "@system-service" ];
+            SystemCallArchitectures = "native";
+            SystemCallErrorNumber = "EPERM";
+            CapabilityBoundingSet = "";
+          };
         in
         {
-          options.services.jack-site = {
-            enable = lib.mkEnableOption "jack.kelliher.info static site";
+          imports = [ jack-site.nixosModules.default ];
+
+          options.services.kelliher-web = {
+            enable = lib.mkEnableOption "kelliher-web hosting platform";
 
             port = lib.mkOption {
               type = lib.types.port;
               default = 8780;
-              description = "Port for the local Caddy file server";
+              description = "Port for the shared Caddy server";
             };
 
             tunnelTokenFile = lib.mkOption {
               type = lib.types.path;
-              description = "Path to file containing the Cloudflare tunnel token (decrypted by sops-nix or similar)";
+              description = "Path to file containing the Cloudflare tunnel token";
+            };
+
+            sites = lib.mkOption {
+              type = lib.types.attrsOf siteSubmodule;
+              default = { };
+              description = "Sites to host via Caddy";
             };
           };
 
           config = lib.mkIf cfg.enable {
-            systemd.services.jack-site-caddy = {
-              description = "jack.kelliher.info — Caddy static file server";
+            systemd.services.kelliher-web-caddy = {
+              description = "kelliher-web — Caddy reverse proxy";
               after = [ "network.target" ];
               wantedBy = [ "multi-user.target" ];
-              serviceConfig = {
-                ExecStart = "${pkgs.caddy}/bin/caddy run --adapter caddyfile --config ${pkgs.writeText "jack-site-Caddyfile" ''
-                  :${toString cfg.port} {
-                    root * ${site}
-                    file_server
-                    header {
-                      X-Content-Type-Options nosniff
-                      X-Frame-Options DENY
-                      Referrer-Policy strict-origin-when-cross-origin
-                    }
-                    handle /health {
-                      respond "OK" 200
-                    }
-                    log {
-                      output stdout
-                      format console
-                    }
-                  }
-                ''}";
+              serviceConfig = hardenedServiceConfig // {
+                ExecStart = "${pkgs.caddy}/bin/caddy run --adapter caddyfile --config ${caddyfile}";
                 Restart = "on-failure";
                 RestartSec = 5;
                 DynamicUser = true;
-                ProtectHome = true;
-                PrivateTmp = true;
-                NoNewPrivileges = true;
-                ProtectSystem = "strict";
-                PrivateDevices = true;
-                PrivateUsers = true;
-                ProtectKernelTunables = true;
-                ProtectKernelModules = true;
-                ProtectKernelLogs = true;
-                ProtectControlGroups = true;
-                RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
-                RestrictNamespaces = true;
-                RestrictRealtime = true;
-                RestrictSUIDSGID = true;
-                LockPersonality = true;
-                MemoryDenyWriteExecute = true;
-                SystemCallFilter = [ "@system-service" ];
-                SystemCallArchitectures = "native";
-                SystemCallErrorNumber = "EPERM";
-                CapabilityBoundingSet = "";
               };
             };
 
-            # Dedicated user for cloudflared so sops-nix can grant read access
-            users.users.jack-site-tunnel = {
+            users.users.kelliher-web-tunnel = {
               isSystemUser = true;
-              group = "jack-site-tunnel";
+              group = "kelliher-web-tunnel";
             };
-            users.groups.jack-site-tunnel = { };
+            users.groups.kelliher-web-tunnel = { };
 
-            systemd.services.jack-site-cloudflared = {
-              description = "jack.kelliher.info Cloudflare Tunnel";
+            systemd.services.kelliher-web-cloudflared = {
+              description = "kelliher-web — Cloudflare Tunnel";
               after = [
                 "network-online.target"
-                "jack-site-caddy.service"
+                "kelliher-web-caddy.service"
               ];
               wants = [ "network-online.target" ];
               wantedBy = [ "multi-user.target" ];
@@ -111,32 +170,12 @@
                 TOKEN=$(cat ${cfg.tunnelTokenFile})
                 exec ${pkgs.cloudflared}/bin/cloudflared --no-autoupdate tunnel run --token "$TOKEN"
               '';
-              serviceConfig = {
+              serviceConfig = hardenedServiceConfig // {
                 Type = "simple";
-                User = "jack-site-tunnel";
-                Group = "jack-site-tunnel";
+                User = "kelliher-web-tunnel";
+                Group = "kelliher-web-tunnel";
                 Restart = "on-failure";
                 RestartSec = 10;
-                ProtectHome = true;
-                PrivateTmp = true;
-                NoNewPrivileges = true;
-                ProtectSystem = "strict";
-                PrivateDevices = true;
-                PrivateUsers = true;
-                ProtectKernelTunables = true;
-                ProtectKernelModules = true;
-                ProtectKernelLogs = true;
-                ProtectControlGroups = true;
-                RestrictAddressFamilies = [ "AF_INET" "AF_INET6" ];
-                RestrictNamespaces = true;
-                RestrictRealtime = true;
-                RestrictSUIDSGID = true;
-                LockPersonality = true;
-                MemoryDenyWriteExecute = true;
-                SystemCallFilter = [ "@system-service" ];
-                SystemCallArchitectures = "native";
-                SystemCallErrorNumber = "EPERM";
-                CapabilityBoundingSet = "";
               };
             };
           };
@@ -151,36 +190,21 @@
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-        # Static site output — www/ contains pre-built assets (bun build locally)
-        packages.default = pkgs.stdenv.mkDerivation {
-          pname = "jack-kelliher-info";
-          version = "0.3.0";
-          src = ./www;
-          installPhase = ''
-            mkdir -p $out
-            cp -r . $out/
-          '';
-        };
-
         devShells.default = pkgs.mkShell {
-          name = "jack-kelliher-info";
+          name = "kelliher-web";
           buildInputs = with pkgs; [
             opentofu
             sops
             age
             ssh-to-age
-            caddy
-            bun
             jq
             curl
             git
           ];
           shellHook = ''
             echo ""
-            echo "🃏 jack.kelliher.info"
+            echo "kelliher-web"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "  nix build       Build static site"
-            echo "  caddy run       Local dev server"
             echo "  cd terraform/   Manage infra"
             echo ""
           '';

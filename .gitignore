@@ -9,9 +9,6 @@ terraform/terraform.tfvars
 terraform/tfplan*
 terraform/.terraform.lock.hcl
 
-# Dependencies
-node_modules/
-
 # Secrets (plaintext) — encrypted yaml is committed
 *.key
 tunnel-env
