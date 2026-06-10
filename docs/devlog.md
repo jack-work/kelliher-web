@@ -133,3 +133,47 @@ curl -H 'Host: john.kelliher.info' http://localhost:8780/
 this directory; deleted locally as part of the split. The current
 `www/resume_kelliher.pdf` lives in the `jack.kelliher.info` repo and
 should be updated there.
+
+## 2026-06-10 — Migration executed; split is live
+
+All pending steps from the 2026-05-10 entry are done. The site is now
+served by `kelliher-web-caddy` + `kelliher-web-cloudflared` on spain;
+the old `jack-site-*` units and the `jack-site-tunnel` user are gone.
+
+### Repo untangling
+The `jack-work/jack.kelliher.info` GitHub URL was silently
+*redirecting* to `kelliher-web` (a rename leaves a redirect, and the
+new repo was never created). That's why this repo's `origin/master`
+had picked up the jack-site registrar commit (`8391cce`) — pushes from
+the jack.kelliher.info clone were landing here through the redirect.
+Fixed by force-pushing this repo's real master (`2cea766`) and then
+creating an actual `jack-work/jack.kelliher.info` repo, which kills
+the redirect. Both repos now have independent remotes and histories.
+
+### Terraform state move
+Ran the three `tofu state mv` renames (`jack_site` → `kelliher_web`).
+`tofu plan`: 0 to add, 0 to destroy — the single in-place "change" is
+just live-connection/`account_tag` metadata drift on the tunnel
+resource, plus the token data source re-read. Tunnel identity
+(`850a2460-…`) preserved; token not invalidated.
+
+### System flake on spain
+One deviation from the snippet in the 2026-05-10 entry: do **not**
+import both NixOS modules — `kelliher-web.nixosModules.default`
+already imports jack-site's module transitively, and importing both
+declares `services.jack-site` twice (evaluation error). spain-flake
+now imports only the kelliher-web module, keeps `jack-site` as a
+direct input with `kelliher-web.inputs.jack-site.follows =
+"jack-site"` so site content can be bumped independently of the
+platform. Secret renamed `jack-site-tunnel-token` →
+`kelliher-web-tunnel-token`, sourced from
+`${kelliher-web}/secrets/tunnel.yaml`, owned by `kelliher-web-tunnel`.
+
+Deployed with `deploy .#spain` (deploy-rs, magic rollback) instead of
+`nixos-rebuild switch` on the box. Verified: both units active, both
+hostnames 200 locally on :8780 and publicly through the tunnel.
+
+### Steady-state edit loop
+Edit `www/` in jack.kelliher.info → commit & push → in spain-flake:
+`nix flake update jack-site && git commit flake.lock && deploy .#spain`.
+Platform changes go through this repo and `nix flake update kelliher-web`.
