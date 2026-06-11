@@ -177,3 +177,105 @@ hostnames 200 locally on :8780 and publicly through the tunnel.
 Edit `www/` in jack.kelliher.info → commit & push → in spain-flake:
 `nix flake update jack-site && git commit flake.lock && deploy .#spain`.
 Platform changes go through this repo and `nix flake update kelliher-web`.
+
+## 2026-06-11 — Identity layer + authenticated APIs (Authelia + lldap + gluck-services)
+
+Stood up a 2FA-gated public API surface on spain: a stranger hitting
+`gluck.kelliher.info` is bounced to an Authelia portal, forced through
+password + TOTP, and only then reaches the backend services. An admin
+holding the right group can mint accounts through an API call.
+
+### Components and where they live
+- **lldap** (`services.lldap`, nixpkgs 0.6.2) — user/group store, SQLite
+  under `/var/lib/lldap`. LDAP bound to `127.0.0.1:3890`; web UI on
+  `:17170` exposed to the **tailnet only** via
+  `networking.firewall.interfaces.tailscale0.allowedTCPPorts`. Never a
+  public site or tunnel ingress.
+- **Authelia** (`services.authelia.instances.main`, 4.39.12) — portal +
+  2FA on loopback `:9091`, SQLite under `/var/lib/authelia-main`,
+  `two_factor` policy for `gluck.kelliher.info`, filesystem notifier.
+  Authenticates against lldap as `uid=authelia` (a member of
+  `lldap_strict_readonly`).
+- **gluck-services** (new repo `github:jack-work/gluck-services`) — two
+  Python/Flask+waitress services behind the platform:
+  `gluck-accounts` (`:9092`, `POST /accounts`) and `gluck-todo`
+  (`:9093`, DuckDB CRUD with per-item ACLs). All config in the repo's
+  NixOS module; wired into spain-flake as an input.
+
+These live in spain-flake (`identity.nix`) rather than the public
+kelliher-web repo, because the secrets wiring and host-specific policy
+belong to the host config. The reusable bit — the `requireAuth` option —
+went into kelliher-web; everything host-specific stayed in spain-flake.
+
+### The header-trust model (the linchpin)
+Backends bind to loopback and trust `Remote-User`/`Remote-Groups`
+headers **only** because the sole route to them is Caddy. The new
+`services.kelliher-web.sites.<name>.requireAuth` option makes Caddy, for
+a gated site: (1) strip any client-supplied `Remote-*` headers, (2)
+`forward_auth` to Authelia's `/api/authz/forward-auth`, (3) `copy_headers`
+the authenticated `Remote-*` values upstream. Site blocks are now emitted
+inside a `route {}` so directive order is literal — Caddy's *default*
+order runs `request_header` (the strip) after `forward_auth`, which would
+have stripped Authelia's headers instead of the client's. Caddy also now
+declares `trusted_proxies static 127.0.0.1/8 ::1` so the cloudflared
+hop's `X-Forwarded-*` is honored. **Verified**: a request carrying a
+forged `Remote-User: mallory` through the tunnel created a todo owned by
+`admin`, not `mallory`; unauthenticated requests (even with forged
+headers) get 302'd to the portal and never reach a backend.
+
+### Authorization
+Coarse capabilities are lldap groups checked against `Remote-Groups`:
+`gluck-todo-create`, `gluck-accounts-create`. Per-todo permissions
+(Read/Write/Delete/Share) live in an `acl` table in gluck-todo's own
+DuckDB — creator gets all four; `POST /todos/{id}/share` grants a subset
+to another user (caller needs Share). Items you can't Read return **404**,
+not 403, to avoid existence leaks. All verified end-to-end: second user
+saw 404 until shared, then Read→200 / Write→403 / Delete→403 exactly per
+the granted rows; a user without `gluck-todo-create` can't create; a
+caller without `gluck-accounts-create` gets 403; and `gluck-accounts`
+refuses to grant anything outside `^gluck-[a-z0-9-]+$` (so no minting an
+`lldap_admin`).
+
+### Bootstrap
+`lldap-bootstrap.service` (oneshot, ordered before authelia-main) is
+idempotent: it ensures the two capability groups and the service
+accounts (`authelia` in `lldap_strict_readonly`, `gluck-accounts` in
+`lldap_admin`) exist. The first deploy attempt bricked activation
+because Authelia's startup check binds as `uid=authelia` and exits fatal
+if the account is missing — deploy-rs magic-rollback caught it and
+reverted; the bootstrap unit fixed it on the next deploy.
+
+### Secrets
+`secrets/identity.yaml` (sops) holds: lldap JWT secret + admin password,
+Authelia JWT/session/storage-encryption keys + LDAP bind password,
+gluck-accounts' lldap service password. `.sops.yaml` in spain-flake
+gained an operator recipient so these are decryptable on the workstation
+too (the pre-existing host secret stays spain-only). lldap and the
+bootstrap/oneshots are `DynamicUser`, so their secrets arrive via systemd
+`LoadCredential` rather than file ownership; Authelia runs as the static
+`authelia-main` user and owns its sops files directly.
+
+### Operational notes / known limitations
+- **TOTP enrollment**: neither tool forces a password change on first
+  login (no Keycloak-style required actions). Mitigation: minted accounts
+  get a random per-account temp password (shown once) + mandatory TOTP
+  registration before any access. Residual risk noted; future option is
+  emailed one-time enrollment links.
+- **Notifier is filesystem**: 2FA/reset links land in
+  `/var/lib/authelia-main/notification.txt` on spain (read with
+  `sudo cat`), not email. Fine for a single operator; revisit if other
+  humans need self-service enrollment.
+- **lldap admin login**: the bootstrap `admin` account is the way in to
+  mint the first real users / assign capability groups. Its TOTP must be
+  enrolled at the portal on first login (any prior enrollment was cleared
+  so the operator enrolls their own device).
+- **DuckDB single-writer**: gluck-todo must stay a single instance; writes
+  are serialized behind one connection + a lock.
+- **No programmatic API clients yet**: auth is browser/session-cookie
+  based via the portal. The future Authelia-OIDC phase (intentionally not
+  enabled here) is what unlocks token-based machine clients.
+
+### Verify loop used
+`/api/firstfactor` → `/api/secondfactor/totp` (TOTP via `oathtool`) →
+authenticated calls, all with `--resolve` pinned to the Cloudflare edge
+so the public tunnel path is exercised, not localhost.
