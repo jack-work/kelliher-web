@@ -47,6 +47,26 @@ resource "cloudflare_dns_record" "john" {
   comment = "john.kelliher.info — managed by OpenTofu"
 }
 
+resource "cloudflare_dns_record" "auth" {
+  zone_id = var.cloudflare_zone_id
+  name    = "auth"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id}.cfargotunnel.com"
+  type    = "CNAME"
+  ttl     = 1
+  proxied = true
+  comment = "auth.kelliher.info (Authelia portal) — managed by OpenTofu"
+}
+
+resource "cloudflare_dns_record" "gluck" {
+  zone_id = var.cloudflare_zone_id
+  name    = "gluck"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id}.cfargotunnel.com"
+  type    = "CNAME"
+  ttl     = 1
+  proxied = true
+  comment = "gluck.kelliher.info (authenticated API) — managed by OpenTofu"
+}
+
 # ─── Tunnel ingress config ──────────────────────────────────────────
 
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kelliher_web" {
@@ -60,6 +80,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kelliher_web" {
       },
       {
         hostname = "john.kelliher.info"
+        service  = "http://localhost:8780"
+      },
+      {
+        hostname = "auth.kelliher.info"
+        service  = "http://localhost:8780"
+      },
+      {
+        hostname = "gluck.kelliher.info"
         service  = "http://localhost:8780"
       },
       {
