@@ -50,10 +50,37 @@
                 default = "";
                 description = "Extra Caddy directives for this site block";
               };
+
+              requireAuth = lib.mkOption {
+                type = lib.types.bool;
+                default = false;
+                description = ''
+                  Gate this site behind the Authelia forward-auth portal.
+                  Client-supplied Remote-* headers are stripped before the
+                  auth subrequest; on success Authelia's Remote-User,
+                  Remote-Groups, Remote-Email and Remote-Name headers are
+                  copied onto the upstream request.
+                '';
+              };
             };
           };
 
-          # Generate Caddy site blocks from all registered sites
+          # Generate Caddy site blocks from all registered sites.
+          # Directives run inside a `route` block, i.e. in literal order —
+          # crucially the Remote-* strip must precede forward_auth (Caddy's
+          # default directive order would run request_header after it).
+          authSnippet = ''
+            request_header -Remote-User
+            request_header -Remote-Groups
+            request_header -Remote-Email
+            request_header -Remote-Name
+            forward_auth ${cfg.forwardAuthAddress} {
+              uri /api/authz/forward-auth
+              copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+              header_up X-Forwarded-Proto https
+            }
+          '';
+
           siteConfigs = lib.mapAttrsToList (
             name: site:
             let
@@ -73,13 +100,21 @@
             ''
               ${hostMatcher}
               handle @${matcherName} {
-                ${handler}
-                ${site.extraConfig}
+                route {
+                  ${lib.optionalString site.requireAuth authSnippet}
+                  ${site.extraConfig}
+                  ${handler}
+                }
               }
             ''
           ) cfg.sites;
 
           caddyfile = pkgs.writeText "kelliher-web-Caddyfile" ''
+            {
+              servers {
+                trusted_proxies static 127.0.0.1/8 ::1
+              }
+            }
             :${toString cfg.port} {
               ${lib.concatStringsSep "\n" siteConfigs}
               log {
@@ -130,6 +165,12 @@
             tunnelTokenFile = lib.mkOption {
               type = lib.types.path;
               description = "Path to file containing the Cloudflare tunnel token";
+            };
+
+            forwardAuthAddress = lib.mkOption {
+              type = lib.types.str;
+              default = "127.0.0.1:9091";
+              description = "Address of the Authelia forward-auth endpoint used by sites with requireAuth";
             };
 
             sites = lib.mkOption {
