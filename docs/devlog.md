@@ -279,3 +279,70 @@ bootstrap/oneshots are `DynamicUser`, so their secrets arrive via systemd
 `/api/firstfactor` → `/api/secondfactor/totp` (TOTP via `oathtool`) →
 authenticated calls, all with `--resolve` pinned to the Cloudflare edge
 so the public tunnel path is exercised, not localhost.
+
+## 2026-06-11 — Invert platform↔site coupling; sites drive Terraform
+
+Two related cleanups so the platform is genuinely generic and a site
+configures *all* of its surface — Caddy, DNS, and tunnel ingress — from a
+single declaration.
+
+### Inverted the NixOS module dependency
+Previously the *generic platform* imported a *specific tenant*: kelliher-web's
+module did `imports = [ jack-site.nixosModules.default ]` and carried a
+`jack-site` flake input. That was backwards — it forced every kelliher-web
+consumer to drag jack-site along, and was the source of the double-declaration
+eval error (importing jack-site both transitively and directly).
+
+Now:
+- **kelliher-web** has no `jack-site` input and imports no site. It only
+  declares `services.kelliher-web.sites` and the Caddy/cloudflared config.
+- Each **site module** (jack-site, gluck-services) registers itself into
+  `services.kelliher-web.sites.<name>` and is imported **directly** by the
+  host config.
+- **spain-flake** imports `kelliher-web.nixosModules.default` +
+  `jack-site.nixosModules.default` + `gluck-services.nixosModules.default`
+  side by side. The `kelliher-web.inputs.jack-site.follows` shim is gone.
+
+The arrow now points the right way: sites depend on the platform contract,
+never the reverse. gluck-services already followed this; jack-site now does
+too.
+
+### The sites→Terraform contract
+`services.kelliher-web.sites.<name>.hostnames` is now the **single source of
+truth** for every public name. It already drove Caddy routing; it now drives
+Cloudflare DNS and tunnel ingress as well, with no duplicated host lists.
+
+Bridge: spain-flake exposes a flake output `packages.tunnel-hostnames` that
+evaluates the host config and emits every registered hostname as
+`hostnames.auto.tfvars.json`. Terraform auto-loads that file into
+`var.hostnames` and builds both the DNS records and the ingress from it:
+
+```hcl
+resource "cloudflare_dns_record" "site" {
+  for_each = toset(var.hostnames)
+  name     = each.key
+  content  = "${...kelliher_web.id}.cfargotunnel.com"
+  type     = "CNAME"; proxied = true; ttl = 1
+}
+# ingress = [for h in var.hostnames : {hostname=h, service=var.tunnel_service}] ++ [404]
+```
+
+So a site **self-configures**: declaring a hostname in its Nix module is the
+whole story. Workflow to add/rename one:
+
+```bash
+# 1. edit the site's services.kelliher-web.sites.<name>.hostnames
+# 2. regenerate the tfvars from the evaluated config:
+cd spain-flake && nix build .#tunnel-hostnames \
+  && install -m644 result ../kelliher-web/terraform/hostnames.auto.tfvars.json
+# 3. apply DNS + ingress, then deploy Caddy:
+cd ../kelliher-web/terraform && nix run nixpkgs#opentofu -- apply
+cd ../../spain-flake && nix flake update <site> && nix develop -c deploy .#spain
+```
+
+The four hand-written `cloudflare_dns_record` resources (jack/john/auth/gluck)
+were migrated into the keyed `site` resource with `moved {}` blocks — the
+apply was **0 added, 0 destroyed, 5 changed** (comment refresh + ingress
+reorder only; tunnel identity and all routing untouched), and a re-plan is
+clean. `hostnames.auto.tfvars.json` is committed as a snapshot so Terraform
+runs standalone; it's regenerated, not hand-edited.

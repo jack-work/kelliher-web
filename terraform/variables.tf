@@ -14,3 +14,20 @@ variable "cloudflare_token_file" {
   type        = string
   default     = "~/.secrets/cloudflaretoken"
 }
+
+variable "hostnames" {
+  description = <<-EOT
+    Public hostnames to route through the tunnel. The source of truth is the
+    NixOS sites contract (services.kelliher-web.sites.*.hostnames); this list
+    is generated into hostnames.auto.tfvars.json by the spain-flake output
+    `tunnel-hostnames` and auto-loaded. Do not hand-edit — regenerate instead.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "tunnel_service" {
+  description = "Local service the tunnel forwards every hostname to (the shared Caddy)."
+  type        = string
+  default     = "http://localhost:8780"
+}
