@@ -4,7 +4,6 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
-    jack-site.url = "github:jack-work/jack.kelliher.info";
   };
 
   outputs =
@@ -12,7 +11,6 @@
       self,
       nixpkgs,
       flake-utils,
-      jack-site,
       ...
     }:
     let
@@ -151,8 +149,10 @@
           };
         in
         {
-          imports = [ jack-site.nixosModules.default ];
-
+          # Generic platform: this module knows about no specific site.
+          # Site modules (jack-site, gluck-services, …) register themselves
+          # into services.kelliher-web.sites and are imported alongside this
+          # module by the host config.
           options.services.kelliher-web = {
             enable = lib.mkEnableOption "kelliher-web hosting platform";
 
