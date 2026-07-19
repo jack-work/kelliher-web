@@ -28,7 +28,29 @@
             options = {
               hostnames = lib.mkOption {
                 type = lib.types.listOf lib.types.str;
-                description = "Hostnames to route to this site";
+                default = [ ];
+                description = ''
+                  Fully-qualified hostnames for this site. Unioned with
+                  the expansion of `subdomains × baseDomains` at the
+                  platform level. Use this when a name doesn't fit the
+                  base domains — apex records, a legacy zone, a
+                  Tailscale hostname, etc. Sites that live entirely on
+                  the platform's base domains should prefer `subdomains`.
+                '';
+              };
+
+              subdomains = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                default = [ ];
+                example = [ "todo" ];
+                description = ''
+                  Labels prefixed onto each
+                  `services.kelliher-web.baseDomains` entry. Declaring
+                  `subdomains = [ "todo" ]` with
+                  `baseDomains = [ "kelliher.info" ]` yields
+                  `todo.kelliher.info`. The site never has to name the
+                  zone — that's the platform's job.
+                '';
               };
 
               root = lib.mkOption {
@@ -63,16 +85,37 @@
             };
           };
 
+          # The effective host list for one site: any fully-qualified names
+          # it declared, plus every subdomain expanded across every base
+          # domain the platform owns. Deduped so overlap doesn't produce
+          # duplicate Caddy matchers or Cloudflare DNS entries.
+          effectiveHostnames =
+            site:
+            lib.unique (
+              site.hostnames
+              ++ lib.concatMap (
+                base: map (sub: "${sub}.${base}") site.subdomains
+              ) cfg.baseDomains
+            );
+
           # Generate Caddy site blocks from all registered sites.
           # Directives run inside a `route` block, i.e. in literal order —
           # crucially the Remote-* strip must precede forward_auth (Caddy's
           # default directive order would run request_header after it).
+          #
+          # Bearer-token bypass: for requests that carry an Authorization:
+          # Bearer header (i.e. an API client with an OIDC access token from
+          # Authelia), skip forward_auth entirely and hand the request to
+          # the backend, which is expected to validate the JWT itself. The
+          # Remote-* strip still runs — the backend must derive identity
+          # from the token, never from headers on a bearer request.
           authSnippet = ''
             request_header -Remote-User
             request_header -Remote-Groups
             request_header -Remote-Email
             request_header -Remote-Name
-            forward_auth ${cfg.forwardAuthAddress} {
+            @no_bearer not header Authorization Bearer*
+            forward_auth @no_bearer ${cfg.forwardAuthAddress} {
               uri /api/authz/forward-auth
               copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
               header_up X-Forwarded-Proto https
@@ -83,7 +126,8 @@
             name: site:
             let
               matcherName = builtins.replaceStrings [ "-" ] [ "_" ] name;
-              hostMatcher = "@${matcherName} host ${lib.concatStringsSep " " site.hostnames}";
+              hosts = effectiveHostnames site;
+              hostMatcher = "@${matcherName} host ${lib.concatStringsSep " " hosts}";
               handler =
                 if site.root != null then
                   ''
@@ -173,6 +217,38 @@
               description = "Address of the Authelia forward-auth endpoint used by sites with requireAuth";
             };
 
+            baseDomains = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [ "kelliher.info" ];
+              description = ''
+                Zones this platform serves. Each site's `subdomains` are
+                expanded across every entry — declaring
+                `subdomains = [ "todo" ]` with
+                `baseDomains = [ "kelliher.info" ]` yields
+                `todo.kelliher.info`. Sites may also list fully-qualified
+                `hostnames` for special cases (apex, mixed zones); the two
+                lists are unioned.
+              '';
+            };
+
+            allHostnames = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              # Not readOnly=true — the module itself sets this in
+              # config below, and readOnly forbids all writers including
+              # the module. Convention only: consumers read, module writes.
+              description = ''
+                Read-only view (by convention): every public hostname
+                across every enabled site, with `subdomains × baseDomains`
+                already expanded and duplicates removed. Consumers
+                (Terraform tfvars generators, monitoring, etc.) should
+                read this rather than walking `sites.*.hostnames`
+                themselves so the subdomain/base-domain composition
+                happens in one place.
+              '';
+            };
+
             sites = lib.mkOption {
               type = lib.types.attrsOf siteSubmodule;
               default = { };
@@ -181,6 +257,23 @@
           };
 
           config = lib.mkIf cfg.enable {
+            # Flatten every site's effective hostnames into one sorted,
+            # deduped list — the canonical view for anything downstream
+            # of the module (Terraform bridges, health checks, etc.).
+            services.kelliher-web.allHostnames = lib.sort (a: b: a < b) (
+              lib.unique (lib.concatMap effectiveHostnames (lib.attrValues cfg.sites))
+            );
+
+            # Fail loud at eval time if a site declares neither a
+            # fully-qualified hostname nor a subdomain: it would produce
+            # an empty `host` matcher and match nothing, which is worse
+            # than a build break.
+            assertions = lib.mapAttrsToList (name: site: {
+              assertion = (effectiveHostnames site) != [ ];
+              message =
+                "kelliher-web: site '${name}' declares no hostnames and no subdomains "
+                + "(or subdomains are declared but baseDomains is empty at the platform level)";
+            }) cfg.sites;
             systemd.services.kelliher-web-caddy = {
               description = "kelliher-web — Caddy reverse proxy";
               after = [ "network.target" ];
