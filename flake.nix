@@ -82,6 +82,19 @@
                   copied onto the upstream request.
                 '';
               };
+
+              requiredGroups = lib.mkOption {
+                type = lib.types.listOf lib.types.str;
+                default = [ ];
+                example = [ "gluck-calendar-create" ];
+                description = ''
+                  Application capability groups this site expects to exist
+                  in lldap. Read by the identity layer to seed
+                  `lldap-bootstrap` and to compose Authelia's 2FA policy
+                  automatically; the site itself does not enforce these
+                  — the app's own handlers do (via Remote-Groups).
+                '';
+              };
             };
           };
 
@@ -249,6 +262,27 @@
               '';
             };
 
+            allAuthenticatedHostnames = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = ''
+                Read-only view: every hostname whose site has
+                `requireAuth = true`. Meant for the identity layer
+                (Authelia's access_control rules) so gated sites don't
+                have to be hand-listed twice.
+              '';
+            };
+
+            allRequiredGroups = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              description = ''
+                Read-only view: union of every site's `requiredGroups`.
+                Meant for `lldap-bootstrap` so app capability groups get
+                created without editing identity.nix per new service.
+              '';
+            };
+
             sites = lib.mkOption {
               type = lib.types.attrsOf siteSubmodule;
               default = { };
@@ -262,6 +296,18 @@
             # of the module (Terraform bridges, health checks, etc.).
             services.kelliher-web.allHostnames = lib.sort (a: b: a < b) (
               lib.unique (lib.concatMap effectiveHostnames (lib.attrValues cfg.sites))
+            );
+
+            services.kelliher-web.allAuthenticatedHostnames = lib.sort (a: b: a < b) (
+              lib.unique (
+                lib.concatMap effectiveHostnames (
+                  lib.filter (s: s.requireAuth) (lib.attrValues cfg.sites)
+                )
+              )
+            );
+
+            services.kelliher-web.allRequiredGroups = lib.sort (a: b: a < b) (
+              lib.unique (lib.concatMap (s: s.requiredGroups) (lib.attrValues cfg.sites))
             );
 
             # Fail loud at eval time if a site declares neither a
