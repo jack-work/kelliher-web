@@ -129,7 +129,27 @@
               root = lib.mkOption {
                 type = lib.types.nullOr lib.types.package;
                 default = null;
-                description = "Nix store path for static site root";
+                description = ''
+                  Nix store path for static site root. Immutable —
+                  serves the build-time contents of the given
+                  derivation. Use `rootPath` when the site's contents
+                  are a mutable filesystem directory (e.g. a storage
+                  volume where files are uploaded at runtime).
+                '';
+              };
+
+              rootPath = lib.mkOption {
+                type = lib.types.nullOr lib.types.str;
+                default = null;
+                example = "/var/lib/gluck-files";
+                description = ''
+                  Filesystem path for a mutable static site root — a
+                  directory whose contents change at runtime. Caddy is
+                  pointed at this literal path (no store copy), so
+                  uploads/deletes take effect immediately. Mutually
+                  exclusive with `root`. Typical use: a platform
+                  storage volume mounted at some /var/lib path.
+                '';
               };
 
               proxyTo = lib.mkOption {
@@ -222,16 +242,30 @@
               matcherName = builtins.replaceStrings [ "-" ] [ "_" ] name;
               hosts = effectiveHostnames site;
               hostMatcher = "@${matcherName} host ${lib.concatStringsSep " " hosts}";
-              handler =
+              # Split the handler into a `preHandler` (the `root`
+              # directive, which must land before user extraConfig so
+              # things like `file_server browse` in extraConfig see a
+              # root) and a `terminalHandler` (the actual responder).
+              # For `root` (Nix package) we emit both root + file_server
+              # ourselves — immutable trees don't want browse and there's
+              # nothing for the user to layer on. For `rootPath` (mutable
+              # dir) we only set root; the user's extraConfig must call
+              # file_server (with `browse` if desired). For `proxyTo` we
+              # emit only the terminal reverse_proxy.
+              preHandler =
                 if site.root != null then
-                  ''
-                    root * ${site.root}
-                    file_server
-                  ''
+                  "root * ${site.root}"
+                else if site.rootPath != null then
+                  "root * ${site.rootPath}"
                 else
-                  ''
-                    reverse_proxy localhost:${toString site.proxyTo}
-                  '';
+                  "";
+              terminalHandler =
+                if site.root != null then
+                  "file_server"
+                else if site.rootPath != null then
+                  ""
+                else
+                  "reverse_proxy localhost:${toString site.proxyTo}";
             in
             ''
               ${hostMatcher}
@@ -239,8 +273,9 @@
                 route {
                   ${stripSnippet}
                   ${lib.optionalString site.requireAuth authSnippet}
+                  ${preHandler}
                   ${site.extraConfig}
-                  ${handler}
+                  ${terminalHandler}
                 }
               }
             ''
@@ -563,6 +598,12 @@
               message =
                 "kelliher-web: site '${name}' declares no hostnames and no subdomains "
                 + "(or subdomains are declared but baseDomains is empty at the platform level)";
+            }) cfg.sites
+            ++ lib.mapAttrsToList (name: site: {
+              assertion = !(site.root != null && site.rootPath != null);
+              message =
+                "kelliher-web: site '${name}' sets both `root` and `rootPath`; "
+                + "pick one (root = immutable Nix store tree, rootPath = mutable filesystem dir).";
             }) cfg.sites
             ++ lib.optionals (storageCfg.enable && storageCfg.backend == "zfs") [
               {
