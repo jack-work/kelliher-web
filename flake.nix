@@ -122,11 +122,19 @@
           # the backend, which is expected to validate the JWT itself. The
           # Remote-* strip still runs — the backend must derive identity
           # from the token, never from headers on a bearer request.
-          authSnippet = ''
+          # Every site block strips client-supplied Remote-* headers
+          # unconditionally, whether or not it's gated by forward_auth.
+          # Without this, an ungated public site would let any request
+          # forge Remote-User to the backend, and any backend that trusts
+          # Remote-* (as ours all do) would be spoofable. requireAuth adds
+          # the forward_auth step on top; it does not gate the strip.
+          stripSnippet = ''
             request_header -Remote-User
             request_header -Remote-Groups
             request_header -Remote-Email
             request_header -Remote-Name
+          '';
+          authSnippet = ''
             @no_bearer not header Authorization Bearer*
             forward_auth @no_bearer ${cfg.forwardAuthAddress} {
               uri /api/authz/forward-auth
@@ -156,6 +164,7 @@
               ${hostMatcher}
               handle @${matcherName} {
                 route {
+                  ${stripSnippet}
                   ${lib.optionalString site.requireAuth authSnippet}
                   ${site.extraConfig}
                   ${handler}
