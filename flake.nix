@@ -286,6 +286,47 @@
             SystemCallErrorNumber = "EPERM";
             CapabilityBoundingSet = "";
           };
+
+          storageCfg = cfg.storage;
+
+          # Escape a Nix string for safe embedding in a double-quoted shell literal.
+          shq = s: "\"" + builtins.replaceStrings [ "\\" "\"" "$" "`" ] [ "\\\\" "\\\"" "\\$" "\\`" ] s + "\"";
+
+          # Plain-backend activation script for one volume:
+          #   mkdir -p / chown / chmod, plus a journal warning when a
+          #   quota was set (no fs-level enforcement here).
+          plainVolumeScript =
+            vol:
+            ''
+              set -eu
+              mkdir -p ${shq vol.mountPoint}
+              chown ${shq "${vol.owner}:${vol.group}"} ${shq vol.mountPoint}
+              chmod ${shq vol.mode} ${shq vol.mountPoint}
+            ''
+            + lib.optionalString (vol.quota != null) ''
+              echo "warning: quota ${vol.quota} on ${vol.mountPoint} is advisory only on plain backend" >&2
+            '';
+
+          mkVolumeUnit =
+            name: vol:
+            let
+              isZfs = storageCfg.backend == "zfs";
+              script = plainVolumeScript vol;
+            in
+            lib.nameValuePair "kelliher-web-volume-${name}" {
+              description = "kelliher-web volume ensurer — ${name} (${storageCfg.backend})";
+              wantedBy = [ "multi-user.target" ];
+              before = lib.optionals isZfs [ "local-fs.target" ];
+              after = lib.optionals isZfs [ "zfs-import.target" ];
+              path = with pkgs; [
+                coreutils
+              ] ++ lib.optionals isZfs [ zfs ];
+              serviceConfig = {
+                Type = "oneshot";
+                RemainAfterExit = true;
+              };
+              script = script;
+            };
         in
         {
           # Generic platform: this module knows about no specific site.
@@ -449,44 +490,52 @@
                 "kelliher-web: site '${name}' declares no hostnames and no subdomains "
                 + "(or subdomains are declared but baseDomains is empty at the platform level)";
             }) cfg.sites;
-            systemd.services.kelliher-web-caddy = {
-              description = "kelliher-web — Caddy reverse proxy";
-              after = [ "network.target" ];
-              wantedBy = [ "multi-user.target" ];
-              serviceConfig = hardenedServiceConfig // {
-                ExecStart = "${pkgs.caddy}/bin/caddy run --adapter caddyfile --config ${caddyfile}";
-                Restart = "on-failure";
-                RestartSec = 5;
-                DynamicUser = true;
-              };
-            };
+
+            systemd.services = lib.mkMerge [
+              (lib.mkIf storageCfg.enable (
+                lib.listToAttrs (lib.mapAttrsToList mkVolumeUnit storageCfg.volumes)
+              ))
+              {
+                kelliher-web-caddy = {
+                  description = "kelliher-web — Caddy reverse proxy";
+                  after = [ "network.target" ];
+                  wantedBy = [ "multi-user.target" ];
+                  serviceConfig = hardenedServiceConfig // {
+                    ExecStart = "${pkgs.caddy}/bin/caddy run --adapter caddyfile --config ${caddyfile}";
+                    Restart = "on-failure";
+                    RestartSec = 5;
+                    DynamicUser = true;
+                  };
+                };
+
+                kelliher-web-cloudflared = {
+                  description = "kelliher-web — Cloudflare Tunnel";
+                  after = [
+                    "network-online.target"
+                    "kelliher-web-caddy.service"
+                  ];
+                  wants = [ "network-online.target" ];
+                  wantedBy = [ "multi-user.target" ];
+                  script = ''
+                    TOKEN=$(cat ${cfg.tunnelTokenFile})
+                    exec ${pkgs.cloudflared}/bin/cloudflared --no-autoupdate tunnel run --token "$TOKEN"
+                  '';
+                  serviceConfig = hardenedServiceConfig // {
+                    Type = "simple";
+                    User = "kelliher-web-tunnel";
+                    Group = "kelliher-web-tunnel";
+                    Restart = "on-failure";
+                    RestartSec = 10;
+                  };
+                };
+              }
+            ];
 
             users.users.kelliher-web-tunnel = {
               isSystemUser = true;
               group = "kelliher-web-tunnel";
             };
             users.groups.kelliher-web-tunnel = { };
-
-            systemd.services.kelliher-web-cloudflared = {
-              description = "kelliher-web — Cloudflare Tunnel";
-              after = [
-                "network-online.target"
-                "kelliher-web-caddy.service"
-              ];
-              wants = [ "network-online.target" ];
-              wantedBy = [ "multi-user.target" ];
-              script = ''
-                TOKEN=$(cat ${cfg.tunnelTokenFile})
-                exec ${pkgs.cloudflared}/bin/cloudflared --no-autoupdate tunnel run --token "$TOKEN"
-              '';
-              serviceConfig = hardenedServiceConfig // {
-                Type = "simple";
-                User = "kelliher-web-tunnel";
-                Group = "kelliher-web-tunnel";
-                Restart = "on-failure";
-                RestartSec = 10;
-              };
-            };
           };
         };
     in
