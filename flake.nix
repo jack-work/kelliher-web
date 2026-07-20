@@ -307,11 +307,78 @@
               echo "warning: quota ${vol.quota} on ${vol.mountPoint} is advisory only on plain backend" >&2
             '';
 
+          # ZFS-backend activation script for one volume. Idempotent:
+          #   create the dataset only if missing, then bring properties
+          #   into line if they drift, then fix ownership/mode. All zfs
+          #   commands should already be on PATH via `path`.
+          zfsVolumeScript =
+            name: vol:
+            let
+              dataset = "${storageCfg.root}/${name}";
+              # Only set props that make sense; skip null quota/reservation.
+              createProps = lib.concatStringsSep " " (
+                [
+                  "-o mountpoint=${shq vol.mountPoint}"
+                  "-o compression=${shq vol.compression}"
+                  "-o recordsize=${shq vol.recordsize}"
+                  "-o atime=off"
+                  "-o xattr=sa"
+                ]
+                ++ lib.optional (vol.quota != null) "-o refquota=${shq vol.quota}"
+                ++ lib.optional (vol.reservation != null) "-o refreservation=${shq vol.reservation}"
+              );
+              # Property drift reconciliation. `zfs set` is a no-op when
+              # the value already matches, so we can just assert-set.
+              driftFixups =
+                ''
+                  # mountpoint
+                  cur_mp=$(zfs get -H -o value mountpoint ${shq dataset})
+                  if [ "$cur_mp" != ${shq vol.mountPoint} ]; then
+                    zfs set mountpoint=${shq vol.mountPoint} ${shq dataset}
+                  fi
+                  # compression
+                  cur_comp=$(zfs get -H -o value compression ${shq dataset})
+                  if [ "$cur_comp" != ${shq vol.compression} ]; then
+                    zfs set compression=${shq vol.compression} ${shq dataset}
+                  fi
+                  # recordsize
+                  cur_rs=$(zfs get -H -o value recordsize ${shq dataset})
+                  if [ "$cur_rs" != ${shq vol.recordsize} ]; then
+                    zfs set recordsize=${shq vol.recordsize} ${shq dataset}
+                  fi
+                ''
+                + lib.optionalString (vol.quota != null) ''
+                  cur_q=$(zfs get -H -o value refquota ${shq dataset})
+                  if [ "$cur_q" != ${shq vol.quota} ]; then
+                    zfs set refquota=${shq vol.quota} ${shq dataset}
+                  fi
+                ''
+                + lib.optionalString (vol.reservation != null) ''
+                  cur_r=$(zfs get -H -o value refreservation ${shq dataset})
+                  if [ "$cur_r" != ${shq vol.reservation} ]; then
+                    zfs set refreservation=${shq vol.reservation} ${shq dataset}
+                  fi
+                '';
+            in
+            ''
+              set -eu
+              if ! zfs list -H -o name ${shq dataset} >/dev/null 2>&1; then
+                zfs create ${createProps} ${shq dataset}
+              fi
+              ${driftFixups}
+              # ZFS mounts on `zfs create` and again on zfs-mount.service;
+              # make sure the directory exists (belt-and-suspenders for
+              # the delegation case where mountpoint=legacy or =none).
+              mkdir -p ${shq vol.mountPoint}
+              chown ${shq "${vol.owner}:${vol.group}"} ${shq vol.mountPoint}
+              chmod ${shq vol.mode} ${shq vol.mountPoint}
+            '';
+
           mkVolumeUnit =
             name: vol:
             let
               isZfs = storageCfg.backend == "zfs";
-              script = plainVolumeScript vol;
+              script = if isZfs then zfsVolumeScript name vol else plainVolumeScript vol;
             in
             lib.nameValuePair "kelliher-web-volume-${name}" {
               description = "kelliher-web volume ensurer — ${name} (${storageCfg.backend})";
@@ -489,7 +556,29 @@
               message =
                 "kelliher-web: site '${name}' declares no hostnames and no subdomains "
                 + "(or subdomains are declared but baseDomains is empty at the platform level)";
-            }) cfg.sites;
+            }) cfg.sites
+            ++ lib.optionals (storageCfg.enable && storageCfg.backend == "zfs") [
+              {
+                assertion =
+                  let
+                    sfs = config.boot.supportedFilesystems or [ ];
+                  in
+                  if builtins.isList sfs then builtins.elem "zfs" sfs else (sfs.zfs or false);
+                message =
+                  "kelliher-web.storage.backend = \"zfs\" requires "
+                  + "`boot.supportedFilesystems` to include \"zfs\".";
+              }
+              {
+                assertion =
+                  let
+                    h = config.networking.hostId or null;
+                  in
+                  h != null && h != "";
+                message =
+                  "kelliher-web.storage.backend = \"zfs\" requires a non-empty "
+                  + "`networking.hostId` (ZFS refuses to import without one).";
+              }
+            ];
 
             systemd.services = lib.mkMerge [
               (lib.mkIf storageCfg.enable (
