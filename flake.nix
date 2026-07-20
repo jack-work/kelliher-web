@@ -547,6 +547,13 @@
               lib.unique (lib.concatMap (s: s.requiredGroups) (lib.attrValues cfg.sites))
             );
 
+            # Sorted, deduped list of every declared volume's mountPoint.
+            # Consumers use this to bulk-wait on the platform's ensurers
+            # via `RequiresMountsFor` without walking `storage.volumes`.
+            services.kelliher-web.storage.allMountPoints = lib.sort (a: b: a < b) (
+              lib.unique (map (v: v.mountPoint) (lib.attrValues storageCfg.volumes))
+            );
+
             # Fail loud at eval time if a site declares neither a
             # fully-qualified hostname nor a subdomain: it would produce
             # an empty `host` matcher and match nothing, which is worse
