@@ -25,6 +25,39 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "kelliher_web" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id
 }
 
+# ─── Zone resolution ────────────────────────────────────────────────
+#
+# The platform serves more than one zone (kelliher.info, figar.org, …).
+# A hostname names its zone implicitly — by being that apex or sitting
+# under it — so nothing downstream of the Nix sites contract has to
+# carry a zone ID around. Exactly one zone must match: `one()` fails
+# loudly on ambiguity, and the check below fails loudly on none.
+
+locals {
+  zones = merge(
+    { "kelliher.info" = var.cloudflare_zone_id },
+    var.cloudflare_zones,
+  )
+
+  hostname_zone = {
+    for h in var.hostnames :
+    h => one([
+      for apex, _ in local.zones : apex
+      if h == apex || endswith(h, ".${apex}")
+    ])
+  }
+}
+
+check "every_hostname_belongs_to_a_known_zone" {
+  assert {
+    condition = alltrue([for h, apex in local.hostname_zone : apex != null])
+    error_message = format(
+      "hostnames with no matching Cloudflare zone: %s (add the zone to var.cloudflare_zones)",
+      join(", ", [for h, apex in local.hostname_zone : h if apex == null]),
+    )
+  }
+}
+
 # ─── DNS + ingress, derived from the kelliher-web sites contract ─────
 #
 # Everything below is driven by var.hostnames, which comes from
@@ -36,7 +69,7 @@ data "cloudflare_zero_trust_tunnel_cloudflared_token" "kelliher_web" {
 resource "cloudflare_dns_record" "site" {
   for_each = toset(var.hostnames)
 
-  zone_id = var.cloudflare_zone_id
+  zone_id = local.zones[local.hostname_zone[each.key]]
   name    = each.key
   content = "${cloudflare_zero_trust_tunnel_cloudflared.kelliher_web.id}.cfargotunnel.com"
   type    = "CNAME"

@@ -31,7 +31,15 @@ sites. Each site is registered as a NixOS submodule under
 ## Layout
 
 ```
-flake.nix          NixOS module + devShell
+flake.nix          Thin wrapper: inputs → outputs
+modules/           The NixOS module, split by concern
+  default.nix        Aggregator (imports the four below)
+  platform.nix       Core knobs (enable, port, tunnelTokenFile, …)
+  caddy.nix          Site contract + Caddyfile + Caddy unit
+  storage.nix        Per-service volumes (plain / ZFS)
+  tunnel.nix         Cloudflare tunnel unit + service user
+lib/hardened.nix   Shared systemd hardening baseline
+devshell.nix       The `nix develop` shell
 terraform/         Cloudflare tunnel + DNS (OpenTofu)
 secrets/           sops-encrypted tunnel token
 docs/devlog.md     running notes

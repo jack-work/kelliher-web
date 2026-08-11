@@ -1,3 +1,9 @@
 cloudflare_zone_id    = "your-kelliher-info-zone-id"
 cloudflare_account_id = "your-cloudflare-account-id"
+
+# Extra zones served by the same tunnel/Caddy — zone apex -> zone ID.
+# Hostnames are matched to a zone by suffix, so nothing else needs editing.
+# cloudflare_zones = {
+#   "figar.org" = "your-figar-org-zone-id"
+# }
 # cloudflare_token_file = "~/.secrets/cloudflaretoken"  # default
