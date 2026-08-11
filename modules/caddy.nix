@@ -23,7 +23,7 @@ let
           Fully-qualified hostnames for this site. Unioned with
           the expansion of `subdomains × baseDomains` at the
           platform level. Use this when a name doesn't fit the
-          base domains — apex records, a legacy zone, a
+          base domains - apex records, a legacy zone, a
           Tailscale hostname, etc. Sites that live entirely on
           the platform's base domains should prefer `subdomains`.
         '';
@@ -72,7 +72,28 @@ let
       proxyTo = lib.mkOption {
         type = lib.types.nullOr lib.types.port;
         default = null;
-        description = "Local port to reverse proxy to";
+        description = "Port to reverse proxy to, on `proxyHost`";
+      };
+
+      proxyHost = lib.mkOption {
+        type = lib.types.str;
+        default = "localhost";
+        example = "100.92.208.109";
+        description = ''
+          Host to reverse proxy to. Defaults to localhost, which is the
+          shape every service on this platform should prefer: a backend
+          bound to loopback can only be reached through Caddy, so the
+          forward-auth gate is not merely the front door but the only one.
+
+          Set this only when the upstream genuinely cannot live on spain --
+          the first case was prangl2's callboard, which reads a figaro
+          store that exists on another machine. An off-host upstream is
+          reachable by anything that can route to it, so the app itself
+          MUST then check the Remote-Groups header Authelia stamps.
+          Caddy strips client-supplied Remote-* before the auth subrequest,
+          so that check is meaningful; without it, the tailnet is the
+          security boundary and Authelia is decoration.
+        '';
       };
 
       extraConfig = lib.mkOption {
@@ -179,7 +200,7 @@ let
         else if site.rootPath != null then
           ""
         else
-          "reverse_proxy localhost:${toString site.proxyTo}";
+          "reverse_proxy ${site.proxyHost}:${toString site.proxyTo}";
     in
     ''
       ${hostMatcher}
@@ -291,6 +312,19 @@ in
         message =
           "kelliher-web: site '${name}' sets both `root` and `rootPath`; "
           + "pick one (root = immutable Nix store tree, rootPath = mutable filesystem dir).";
+      }) cfg.sites
+      ++ lib.mapAttrsToList (name: site: {
+        # An off-host upstream is reachable by anything that can route to it, so
+        # the loopback bind is no longer doing the work the trust model assumes.
+        # Requiring forward-auth does not make the backend unreachable -- only
+        # the backend's own Remote-Groups check can do that -- but shipping one
+        # of these WITHOUT the auth gate would put an unauthenticated service on
+        # the public internet, which is worth failing the build over.
+        assertion = site.proxyHost == "localhost" || site.proxyTo == null || site.requireAuth;
+        message =
+          "kelliher-web: site '${name}' proxies off-host to ${site.proxyHost} without requireAuth. "
+          + "A loopback upstream is protected by being unreachable; an off-host one is not. "
+          + "Set requireAuth = true, and make the backend check Remote-Groups itself.";
       }) cfg.sites;
 
     systemd.services = {
