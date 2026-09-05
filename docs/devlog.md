@@ -346,3 +346,104 @@ apply was **0 added, 0 destroyed, 5 changed** (comment refresh + ingress
 reorder only; tunnel identity and all routing untouched), and a re-plan is
 clean. `hostnames.auto.tfvars.json` is committed as a snapshot so Terraform
 runs standalone; it's regenerated, not hand-edited.
+
+## 2026-09-05 - The bearer bypass was open on four hostnames
+
+An incident, found while migrating gluck-files to object storage, and fixed
+before that migration shipped.
+
+### What was wrong
+
+`requireAuth = true` emitted, for every site, unconditionally:
+
+```
+@no_bearer not header Authorization Bearer*
+forward_auth @no_bearer 127.0.0.1:9091 { ... }
+```
+
+`forward_auth` ran only for requests matching `@no_bearer`. A request carrying
+an `Authorization: Bearer` header was not authenticated, it was forwarded, on
+the understanding that the backend verifies the JWT itself. That understanding
+holds for herald, calendar, forms, todo and kfin. It was never checked against
+the sites that did not.
+
+Tested against production with `Authorization: Bearer not-a-real-token`:
+
+| host | before | what answered |
+|---|---|---|
+| files | 200, 33,966 bytes | the browse listing of private documents |
+| keel | 200 | the repo index of this estate's own source |
+| chat | 200 | Element |
+| accounts | 200 | `/accounts/health`, from the app itself |
+| forms, cal, todo, fin | 401 | the backends, verifying and rejecting |
+
+The header did not have to be valid. It had to be shaped like a bearer token.
+
+gluck-files was the purest case: a `file_server` with no backend process at
+all. Nothing in the request path could have checked that token. A promise
+cannot be kept by a program that does not exist.
+
+accounts deserves its own sentence. `POST /accounts` creates lldap users. It
+was the highest severity endpoint in the incident, and it returned 401 only
+because it happened to check for an empty `Remote-User` for unrelated reasons.
+That is luck, not protection.
+
+### The probe trap, worth remembering
+
+The first matrix of this incident was built by curling `/` on each host, and
+two of its entries were wrong in opposite directions.
+
+A 404 at the root conflates two unrelated facts. Go's default mux answers
+"no such route" and Flask's error page answers "your request reached me and I
+had nothing at that path". One means the request never touched the app, the
+other means it did.
+
+- herald returned 404 at `/` (Go, 19 bytes) and was filed as untested. Probing
+  `/v1/inbox` and `POST /v1/say` returned 401 from herald itself: it verifies.
+  Had it been left out of the opt-in list on the conservative reading, the fix
+  would have severed the Telegram channel the incident was being reported over.
+- accounts returned 404 at `/` (Flask's HTML error page) and was read as a
+  routing artifact. It was the app answering, which meant the request had
+  already passed the gate.
+
+Probe a route the application actually serves. When unsure, test. Do not
+default in either direction on a live path, because "when unsure, leave the
+bypass off" sounds safe and can take down the channel you would use to report
+the outage.
+
+### The fix
+
+`bearerBypass`, per site, default false. Setting it is an assertion about the
+backend: "this app verifies the JWT itself, against Authelia's JWKS, before
+doing anything." Sites opt in from the host config, in one place, so the list
+of sites claiming to verify tokens can be read from configuration instead of
+rediscovered with curl.
+
+Two assertions refuse compositions that cannot be true:
+
+1. `bearerBypass` without `requireAuth`. There is no forward_auth to bypass,
+   so the site is public and the option is decoration.
+2. `bearerBypass` on a site with `root` or `rootPath`. A static tree has no
+   process that could verify a token.
+
+The second is the more valuable of the two, and it is worth being explicit
+about why. A default protects the next author only if they accept it. An
+unrepresentable state protects them even when they are wrong. The exact shape
+that left private documents readable is now a build failure rather than a
+discovery: you cannot express it, so you cannot ship it and find out later.
+
+### Result
+
+| bearerBypass = true | cal, forms, todo, fin, herald |
+| bearerBypass = false | files, keel, chat, accounts |
+| public, unchanged | jack, figar, canbrain, matrix, f, apex |
+
+keel stays out until its OIDC work merges from `feat/keel-oidc`; it verifies
+nothing today.
+
+Verified after deploy, on routes rather than `/`. The four previously open
+hosts now redirect to the portal, including
+`files.kelliher.info/wfh/Rental_Agreement.pdf` specifically. The five opt-ins
+still answer with their own 401 bodies rather than a portal redirect, proving
+the token reached a verifier, and the same sites with no bearer header at all
+redirect to Authelia.

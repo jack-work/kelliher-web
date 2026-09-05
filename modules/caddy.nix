@@ -125,26 +125,17 @@ let
 
           Setting this is an ASSERTION ABOUT THE BACKEND: "this
           app verifies the JWT itself, against Authelia's JWKS,
-          before doing anything." If that is not true, this option
-          is not a bypass to a stricter check — it is an open door,
-          because the header only has to be SHAPED like a bearer
-          token to take it. It does not have to be valid. It does
-          not have to be a JWT.
-
-          Default false, and the default is the whole point. This
-          used to be unconditional, which made `requireAuth = true`
-          silently mean "Authelia gates this, unless the caller
-          says the magic word, in which case your backend had
-          better be checking" — an obligation invisible at the call
-          site. Three sites had inherited it without a verifier:
-          gluck-files (a file_server with no backend process at
-          all), keel (git hosting; its OIDC work is unmerged), and
-          the Element client. All three answered 200 to
-          `Authorization: Bearer not-a-real-token` in production.
+          before doing anything." If that is not true, this is not
+          a bypass to a stricter check, it is an open door: the
+          header only has to be SHAPED like a bearer token. It
+          does not have to be valid, or a JWT.
 
           Before setting this true, test it rather than assume it.
-          Curl the site with a garbage bearer token: 401 means the
-          backend verifies and rejects, 200 means it never looked.
+          Curl the site with a garbage bearer token on a route it
+          actually serves: 401 means the backend verifies and
+          rejects, 200 means it never looked. Probing "/" is not
+          enough; see docs/devlog.md, 2026-09-05, for the incident
+          this option came from and the probe that missed it twice.
         '';
       };
 
@@ -191,7 +182,7 @@ let
   # also inherit an obligation to verify JWTs that nothing in the
   # call site mentions. When the backend does not hold up its end,
   # the composition is not "authenticated site" but "open site with
-  # extra steps": the header only has to LOOK like a bearer token.
+  # extra steps". See docs/devlog.md, 2026-09-05.
   #
   # Every site block strips client-supplied Remote-* headers
   # unconditionally, whether or not it's gated by forward_auth.
@@ -384,7 +375,7 @@ in
         message =
           "kelliher-web: site '${name}' sets `bearerBypass` but serves files directly "
           + "(root/rootPath). `bearerBypass` asserts that a BACKEND verifies the JWT, "
-          + "and a file_server has no backend to do it — this is how gluck-files came "
+          + "and a file_server has no backend to do it. This is how gluck-files came "
           + "to answer 200 to 'Authorization: Bearer not-a-real-token'.";
       }) cfg.sites
       ++ lib.mapAttrsToList (name: site: {
