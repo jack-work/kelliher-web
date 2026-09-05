@@ -114,6 +114,40 @@ let
         '';
       };
 
+      bearerBypass = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Let requests carrying `Authorization: Bearer …` skip
+          forward_auth and reach the backend directly, so an API
+          client holding an OIDC access token from Authelia can
+          call this site without a browser session.
+
+          Setting this is an ASSERTION ABOUT THE BACKEND: "this
+          app verifies the JWT itself, against Authelia's JWKS,
+          before doing anything." If that is not true, this option
+          is not a bypass to a stricter check — it is an open door,
+          because the header only has to be SHAPED like a bearer
+          token to take it. It does not have to be valid. It does
+          not have to be a JWT.
+
+          Default false, and the default is the whole point. This
+          used to be unconditional, which made `requireAuth = true`
+          silently mean "Authelia gates this, unless the caller
+          says the magic word, in which case your backend had
+          better be checking" — an obligation invisible at the call
+          site. Three sites had inherited it without a verifier:
+          gluck-files (a file_server with no backend process at
+          all), keel (git hosting; its OIDC work is unmerged), and
+          the Element client. All three answered 200 to
+          `Authorization: Bearer not-a-real-token` in production.
+
+          Before setting this true, test it rather than assume it.
+          Curl the site with a garbage bearer token: 401 means the
+          backend verifies and rejects, 200 means it never looked.
+        '';
+      };
+
       requiredGroups = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
@@ -150,6 +184,15 @@ let
   # the backend, which is expected to validate the JWT itself. The
   # Remote-* strip still runs — the backend must derive identity
   # from the token, never from headers on a bearer request.
+  #
+  # THAT EXPECTATION IS NOW OPT-IN (`bearerBypass`), because it was
+  # being extended to backends that had never agreed to it. A site
+  # inherits Authelia by asking for `requireAuth`; it should not
+  # also inherit an obligation to verify JWTs that nothing in the
+  # call site mentions. When the backend does not hold up its end,
+  # the composition is not "authenticated site" but "open site with
+  # extra steps": the header only has to LOOK like a bearer token.
+  #
   # Every site block strips client-supplied Remote-* headers
   # unconditionally, whether or not it's gated by forward_auth.
   # Without this, an ungated public site would let any request
@@ -162,14 +205,22 @@ let
     request_header -Remote-Email
     request_header -Remote-Name
   '';
-  authSnippet = ''
-    @no_bearer not header Authorization Bearer*
-    forward_auth @no_bearer ${cfg.forwardAuthAddress} {
-      uri /api/authz/forward-auth
-      copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
-      header_up X-Forwarded-Proto https
-    }
-  '';
+  authSnippet =
+    site:
+    let
+      # With the bypass, forward_auth runs only for requests that do
+      # not look like API calls. Without it, forward_auth runs for
+      # everything, which is what `requireAuth` reads like.
+      matcher = lib.optionalString site.bearerBypass "@no_bearer ";
+    in
+    ''
+      ${lib.optionalString site.bearerBypass "@no_bearer not header Authorization Bearer*"}
+      forward_auth ${matcher}${cfg.forwardAuthAddress} {
+        uri /api/authz/forward-auth
+        copy_headers Remote-User Remote-Groups Remote-Email Remote-Name
+        header_up X-Forwarded-Proto https
+      }
+    '';
 
   siteConfigs = lib.mapAttrsToList (
     name: site:
@@ -207,7 +258,7 @@ let
       handle @${matcherName} {
         route {
           ${stripSnippet}
-          ${lib.optionalString site.requireAuth authSnippet}
+          ${lib.optionalString site.requireAuth (authSnippet site)}
           ${preHandler}
           ${site.extraConfig}
           ${terminalHandler}
@@ -312,6 +363,29 @@ in
         message =
           "kelliher-web: site '${name}' sets both `root` and `rootPath`; "
           + "pick one (root = immutable Nix store tree, rootPath = mutable filesystem dir).";
+      }) cfg.sites
+      ++ lib.mapAttrsToList (name: site: {
+        # bearerBypass without requireAuth emits nothing at all: there is
+        # no forward_auth for a bearer request to skip. Silently ignoring
+        # it would let a site read as if it had an authenticated API path
+        # when it is simply public, which is the kind of comfortable
+        # misreading this option exists to end.
+        assertion = site.bearerBypass -> site.requireAuth;
+        message =
+          "kelliher-web: site '${name}' sets `bearerBypass` without `requireAuth`; "
+          + "there is no forward_auth to bypass, so the site is public and the "
+          + "option is decoration. Drop it, or add requireAuth.";
+      }) cfg.sites
+      ++ lib.mapAttrsToList (name: site: {
+        # A static tree cannot verify a JWT: there is no process to do it.
+        # This is the exact composition that left files.kelliher.info
+        # readable by anything that sent a bearer-shaped header.
+        assertion = site.bearerBypass -> (site.root == null && site.rootPath == null);
+        message =
+          "kelliher-web: site '${name}' sets `bearerBypass` but serves files directly "
+          + "(root/rootPath). `bearerBypass` asserts that a BACKEND verifies the JWT, "
+          + "and a file_server has no backend to do it — this is how gluck-files came "
+          + "to answer 200 to 'Authorization: Bearer not-a-real-token'.";
       }) cfg.sites
       ++ lib.mapAttrsToList (name: site: {
         # An off-host upstream is reachable by anything that can route to it, so
