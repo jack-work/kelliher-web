@@ -24,8 +24,8 @@ in
         wants = [ "network-online.target" ];
         wantedBy = [ "multi-user.target" ];
         script = ''
-          TOKEN=$(cat ${cfg.tunnelTokenFile})
-          exec ${pkgs.cloudflared}/bin/cloudflared --no-autoupdate tunnel run --token "$TOKEN"
+          exec ${pkgs.cloudflared}/bin/cloudflared --no-autoupdate tunnel run \
+            --token-file ${cfg.tunnelTokenFile}
         '';
         serviceConfig = hardenedServiceConfig // {
           Type = "simple";
