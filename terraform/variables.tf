@@ -46,3 +46,13 @@ variable "tunnel_service" {
   type        = string
   default     = "http://localhost:8780"
 }
+
+variable "edge_cached_hostnames" {
+  description = <<-EOF2
+    Hostnames whose responses Cloudflare may cache, HTML included, for as long
+    as the origin's Cache-Control allows. Each must also be in `hostnames`.
+    Cloudflare never caches HTML without a rule, so this is opt-in per host.
+  EOF2
+  type        = list(string)
+  default     = []
+}

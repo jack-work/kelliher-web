@@ -113,6 +113,46 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kelliher_web" {
   }
 }
 
+# ─── Edge cache, opt-in per hostname ────────────────────────────────
+#
+# Cloudflare caches HTML only when a rule says it may. The rule is scoped to
+# the listed hosts, never the whole zone, because a zone can carry other
+# services whose responses must not be cached. TTLs are the origin's.
+
+locals {
+  edge_cached_by_zone = {
+    for apex in distinct([for h in var.edge_cached_hostnames : local.hostname_zone[h]]) :
+    apex => [for h in var.edge_cached_hostnames : h if local.hostname_zone[h] == apex]
+  }
+}
+
+check "edge_cached_hostnames_are_served" {
+  assert {
+    condition     = alltrue([for h in var.edge_cached_hostnames : contains(var.hostnames, h)])
+    error_message = "every edge_cached_hostnames entry must also be in hostnames"
+  }
+}
+
+resource "cloudflare_ruleset" "edge_cache" {
+  for_each = local.edge_cached_by_zone
+
+  zone_id = local.zones[each.key]
+  name    = "edge cache"
+  kind    = "zone"
+  phase   = "http_request_cache_settings"
+  rules = [{
+    description = "cache what the origin says is cacheable"
+    expression  = format("(http.host in {%s})", join(" ", [for h in each.value : jsonencode(h)]))
+    action      = "set_cache_settings"
+    enabled     = true
+    action_parameters = {
+      cache       = true
+      edge_ttl    = { mode = "respect_origin" }
+      browser_ttl = { mode = "respect_origin" }
+    }
+  }]
+}
+
 # ─── Outputs ────────────────────────────────────────────────────────
 
 output "tunnel_id" {
