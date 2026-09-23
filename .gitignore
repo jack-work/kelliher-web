@@ -11,3 +11,4 @@ terraform/.terraform.lock.hcl
 # Secrets (plaintext) — encrypted yaml is committed
 *.key
 tunnel-env
+terraform/hostnames.auto.tfvars.json

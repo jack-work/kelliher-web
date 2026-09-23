@@ -447,3 +447,14 @@ hosts now redirect to the portal, including
 still answer with their own 401 bodies rather than a portal redirect, proving
 the token reached a verifier, and the same sites with no bearer header at all
 redirect to Authelia.
+
+## 2026-09-23 - hostnames.auto.tfvars.json is no longer tracked
+
+| reason | detail |
+|---|---|
+| it is a build artifact | `nix build .#tunnel-hostnames` in spain-flake generates it; a committed copy is a second source of truth |
+| it had already drifted | state carried three hostnames the committed copy did not |
+| this repo is public | the file enumerates every hostname the platform serves, side by side |
+
+A fresh clone regenerates it before `apply`. Terraform with no hostnames plans
+to delete every record, so read the plan.
