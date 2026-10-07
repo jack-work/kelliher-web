@@ -141,3 +141,86 @@ output "ses_smtp_host" {
   value       = "email-smtp.${var.ses_region}.amazonaws.com"
   description = "Put this in identity.nix as smtpAddress, as smtp://<host>:587."
 }
+
+# ─────────────────────────────────────────────────────────────────────
+# spain-ops: the credential spain itself uses to run this Terraform.
+# ─────────────────────────────────────────────────────────────────────
+#
+# The point is to run `tofu apply` over ssh on spain with no AWS login on a
+# laptop. The key reaches spain through sops.
+#
+# NOT AdministratorAccess, deliberately. spain has passwordless sudo, is the
+# house router, and hosts a public unauthenticated endpoint, so a credential
+# there is effectively root-readable and one ssh key from the internet. Scoped
+# to SES, this is worth a nuisance if it leaks. Scoped to the account, it would
+# be worth the account.
+#
+# IAM is READ-ONLY on purpose and is the one widening beyond "SES only".
+# Terraform refreshes every resource in state before it plans, and this state
+# contains aws_iam_user.ses_smtp, so without iam:Get*/List* a plan from spain
+# fails before it starts. Read cannot escalate; CreateUser and PutUserPolicy
+# could, so they stay on the laptop. Changing IAM is a laptop operation.
+resource "aws_iam_user" "spain_ops" {
+  name = "spain-ops"
+  path = "/service/"
+  tags = { purpose = "Terraform runner on spain - SES only" }
+}
+
+resource "aws_iam_user_policy" "spain_ops" {
+  name = "ses-manage-and-iam-read"
+  user = aws_iam_user.spain_ops.name
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ManageSesIdentities"
+        Effect = "Allow"
+        Action = [
+          "ses:GetAccount",
+          "ses:GetEmailIdentity",
+          "ses:ListEmailIdentities",
+          "ses:CreateEmailIdentity",
+          "ses:DeleteEmailIdentity",
+          "ses:PutEmailIdentityDkimSigningAttributes",
+          "ses:PutEmailIdentityMailFromAttributes",
+          "ses:PutEmailIdentityFeedbackAttributes",
+          "ses:TagResource",
+          "ses:UntagResource",
+          "ses:ListTagsForResource",
+        ]
+        Resource = "*"
+      },
+      {
+        # Refresh only. No CreateUser, no PutUserPolicy, no CreateAccessKey:
+        # those are how a scoped credential becomes an unscoped one.
+        Sid    = "ReadIamForRefreshOnly"
+        Effect = "Allow"
+        Action = [
+          "iam:GetUser",
+          "iam:GetUserPolicy",
+          "iam:ListUserPolicies",
+          "iam:ListAttachedUserPolicies",
+          "iam:ListGroupsForUser",
+          "iam:ListAccessKeys",
+        ]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_access_key" "spain_ops" {
+  user = aws_iam_user.spain_ops.name
+}
+
+output "spain_ops_access_key_id" {
+  value       = aws_iam_access_key.spain_ops.id
+  description = "Goes to spain as aws_spain_ops_key_id in sops."
+}
+
+output "spain_ops_secret_access_key" {
+  value       = aws_iam_access_key.spain_ops.secret
+  sensitive   = true
+  description = "Read with `tofu output -raw spain_ops_secret_access_key`, then into sops as aws_spain_ops_secret."
+}
