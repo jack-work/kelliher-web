@@ -4,6 +4,12 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = ">= 5.8.2"
     }
+    # Outbound mail: see ses.tf. Both providers live in one state so SES's
+    # DKIM tokens are wired into Cloudflare rather than pasted by hand.
+    aws = {
+      source  = "hashicorp/aws"
+      version = ">= 5.70"
+    }
   }
   required_version = ">= 1.2"
 }

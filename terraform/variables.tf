@@ -56,3 +56,32 @@ variable "edge_cached_hostnames" {
   type        = list(string)
   default     = []
 }
+
+# ── outbound mail (ses.tf) ───────────────────────────────────────────
+variable "ses_region" {
+  type        = string
+  default     = "us-east-1"
+  description = "SES region. Also names the bounce-feedback MX and the SMTP host."
+}
+
+variable "mail_domain" {
+  type        = string
+  default     = "kelliher.info"
+  description = "Domain mail is sent AS. Must be a zone in var.cloudflare_zones."
+}
+
+variable "mail_from_subdomain" {
+  type        = string
+  default     = "mail"
+  description = <<-EOT
+    Subdomain used as the SES custom MAIL FROM. A subdomain on purpose: SPF
+    authorises the envelope sender's domain, so this keeps the apex SPF record
+    free for a different provider later.
+  EOT
+}
+
+variable "dmarc_report_address" {
+  type        = string
+  default     = "jackwkelliher@gmail.com"
+  description = "Where DMARC aggregate reports go."
+}
