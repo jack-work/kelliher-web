@@ -2,6 +2,9 @@ keys:
   # Operator workstation (gluck)
   - &operator age12edvyhzhyd4afl4veljtyt572ga430dk29unpszp2n2vn244zdzqa9zhu7
 
+  # Offline operator key, backed up off this disk
+  - &operator_offline age1tn43d3js9al679lr67724rr98rvgkczqg602673pex76qesg5p6qw5h7al
+
   # Deploy target (spain) — existing sops-nix key
   - &deploy age136h60ucfnz4w480dakvpx26k54l3j04yzpx5rmgdcqzw8nnn8q4qp86pwa
 
@@ -10,4 +13,5 @@ creation_rules:
     key_groups:
       - age:
           - *operator
+          - *operator_offline
           - *deploy
