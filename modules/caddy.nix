@@ -258,6 +258,25 @@ let
     ''
   ) cfg.sites;
 
+  logFormat =
+    if cfg.uriRedactions == [ ] then
+      "format console"
+    else
+      lib.concatStringsSep "\n" (
+        [
+          "format filter {"
+          "      wrap console"
+          "      fields {"
+        ]
+        ++ map (
+          r: "        request>uri regexp \"${r.pattern}\" \"${r.replacement}\""
+        ) cfg.uriRedactions
+        ++ [
+          "      }"
+          "    }"
+        ]
+      );
+
   caddyfile = pkgs.writeText "kelliher-web-Caddyfile" ''
     {
       servers {
@@ -268,13 +287,43 @@ let
       ${lib.concatStringsSep "\n" siteConfigs}
       log {
         output stdout
-        format console
+        ${logFormat}
       }
     }
   '';
 in
 {
   options.services.kelliher-web = {
+    uriRedactions = lib.mkOption {
+      default = [ ];
+      example = [
+        {
+          pattern = "/i/[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}";
+          replacement = "/i/REDACTED";
+        }
+      ];
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            pattern = lib.mkOption {
+              type = lib.types.str;
+              description = "Go regexp matched against the request URI in the access log.";
+            };
+            replacement = lib.mkOption {
+              type = lib.types.str;
+              description = "What the matched span becomes in the log.";
+            };
+          };
+        }
+      );
+      description = ''
+        Rewrites applied to `request>uri` before it is logged, for sites
+        that carry a credential in the path. Caddy redacts `Cookie` and
+        `Authorization` on its own; it cannot know that a path segment is
+        a secret. Empty leaves the access log encoder untouched.
+      '';
+    };
+
     sites = lib.mkOption {
       type = lib.types.attrsOf siteSubmodule;
       default = { };
