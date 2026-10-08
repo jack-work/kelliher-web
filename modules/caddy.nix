@@ -139,6 +139,30 @@ let
         '';
       };
 
+      trustsRemoteHeaders = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Declare that this site's backend derives identity from the
+          Remote-User and Remote-Groups headers and enforces its own
+          authorization from them.
+
+          That is only safe while two things hold: the backend is
+          unreachable except through Caddy, and Caddy overwrites those
+          headers on every request rather than passing a client's
+          through. Setting this makes the build check both, against the
+          rendered Caddyfile rather than against intent, so the four
+          strips and an unconditional forward_auth cannot be dropped by
+          a later edit without failing the build.
+
+          A backend that validates a token itself does not want this; it
+          wants `bearerBypass`. The two are mutually exclusive, because a
+          bearer request reaches the backend with no forward_auth having
+          run, and a backend that trusts Remote-* would then be taking
+          identity from a request that proved nothing.
+        '';
+      };
+
       requiredGroups = lib.mkOption {
         type = lib.types.listOf lib.types.str;
         default = [ ];
@@ -213,7 +237,7 @@ let
       }
     '';
 
-  siteConfigs = lib.mapAttrsToList (
+  siteBlock =
     name: site:
     let
       matcherName = builtins.replaceStrings [ "-" ] [ "_" ] name;
@@ -255,8 +279,10 @@ let
           ${terminalHandler}
         }
       }
-    ''
-  ) cfg.sites;
+    '';
+
+  siteBlocks = lib.mapAttrs siteBlock cfg.sites;
+  siteConfigs = lib.attrValues siteBlocks;
 
   logFormat =
     if cfg.uriRedactions == [ ] then
@@ -439,7 +465,63 @@ in
           "kelliher-web: site '${name}' proxies off-host to ${site.proxyHost} without requireAuth. "
           + "A loopback upstream is protected by being unreachable; an off-host one is not. "
           + "Set requireAuth = true, and make the backend check Remote-Groups itself.";
-      }) cfg.sites;
+      }) cfg.sites
+      ++ lib.concatLists (
+        lib.mapAttrsToList (
+          name: site:
+          let
+            block = siteBlocks.${name};
+            strips = map (h: "request_header -Remote-${h}") [
+              "User"
+              "Groups"
+              "Email"
+              "Name"
+            ];
+            missing = lib.filter (s: !(lib.hasInfix s block)) strips;
+            # No matcher between the directive and the address: a matcher is how
+            # forward_auth stops being unconditional.
+            gated = lib.hasInfix "forward_auth ${cfg.forwardAuthAddress} {" block;
+          in
+          lib.optionals site.trustsRemoteHeaders [
+            {
+              assertion = missing == [ ];
+              message =
+                "kelliher-web: site '${name}' sets trustsRemoteHeaders, but its rendered "
+                + "Caddy block does not strip ${lib.concatStringsSep ", " missing}. "
+                + "The backend reads identity out of those headers, so without the strip "
+                + "any client can forge it. Restore the strip rather than the option.";
+            }
+            {
+              assertion = gated;
+              message =
+                "kelliher-web: site '${name}' sets trustsRemoteHeaders, but its rendered "
+                + "Caddy block has no unconditional forward_auth. The headers the backend "
+                + "trusts are written by Authelia on the way through; with no forward_auth, "
+                + "or one behind a matcher, they are absent or attacker-supplied.";
+            }
+            {
+              assertion = site.requireAuth;
+              message =
+                "kelliher-web: site '${name}' sets trustsRemoteHeaders without requireAuth. "
+                + "Nothing would populate Remote-User, and the site is public.";
+            }
+            {
+              assertion = !site.bearerBypass;
+              message =
+                "kelliher-web: site '${name}' sets both trustsRemoteHeaders and bearerBypass. "
+                + "A bearer request skips forward_auth, so the backend would authorize from "
+                + "headers no gate wrote. Pick one trust model.";
+            }
+            {
+              assertion = site.proxyHost == "localhost";
+              message =
+                "kelliher-web: site '${name}' sets trustsRemoteHeaders but proxies off-host "
+                + "to ${site.proxyHost}. The strip only covers requests that arrive through "
+                + "Caddy, and an off-host backend can be reached without it.";
+            }
+          ]
+        ) cfg.sites
+      );
 
     systemd.services = {
       kelliher-web-caddy = {

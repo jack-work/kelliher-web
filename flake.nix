@@ -26,6 +26,12 @@
       in
       {
         devShells.default = import ./devshell.nix { inherit pkgs; };
+
+        checks.assertions = import ./tests/assertions.nix {
+          inherit pkgs;
+          lib = nixpkgs.lib;
+          nixosSystem = nixpkgs.lib.nixosSystem;
+        };
       }
     );
 }
