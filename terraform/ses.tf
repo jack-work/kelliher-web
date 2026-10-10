@@ -20,6 +20,8 @@ provider "aws" {
   region = var.ses_region
 }
 
+data "aws_caller_identity" "current" {}
+
 # ── the identity ─────────────────────────────────────────────────────
 # EasyDKIM: SES generates the keypair and we publish three CNAMEs pointing at
 # its published public halves. We never hold a signing key.
@@ -112,12 +114,28 @@ resource "aws_iam_user_policy" "ses_smtp" {
   name = "send-as-estate"
   user = aws_iam_user.ses_smtp.name
 
+  # Scoped by the FROM ADDRESS, not by the resource ARN.
+  #
+  # Resource-scoping to the domain identity alone was too narrow and only failed
+  # on a real send: in sandbox, SES also authorises against the RECIPIENT
+  # identity, so sending to a verified address returned
+  #   554 not authorized to perform ses:SendRawEmail on identity/<recipient>
+  # That check disappears with production access, which is exactly why resource
+  # ARNs are the wrong handle here: the set of identities involved changes with
+  # account state.
+  #
+  # ses:FromAddress is the control that actually matters and does not drift. This
+  # credential can send as auth@kelliher.info and as nothing else, whatever
+  # identities exist in the account.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
       Action   = ["ses:SendRawEmail", "ses:SendEmail"]
-      Resource = aws_sesv2_email_identity.estate.arn
+      Resource = "arn:aws:ses:${var.ses_region}:${data.aws_caller_identity.current.account_id}:identity/*"
+      Condition = {
+        StringEquals = { "ses:FromAddress" = var.mail_from_address }
+      }
     }]
   })
 }

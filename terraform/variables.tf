@@ -85,3 +85,14 @@ variable "dmarc_report_address" {
   default     = "jackwkelliher@gmail.com"
   description = "Where DMARC aggregate reports go."
 }
+
+variable "mail_from_address" {
+  type        = string
+  default     = "auth@kelliher.info"
+  description = <<-EOT
+    The only address the SMTP credential may send as. Enforced by an IAM
+    condition on ses:FromAddress, which is a stabler control than a resource
+    ARN: the identities SES authorises against change with sandbox status.
+    Must match smtpSender in spain-flake/identity.nix.
+  EOT
+}
