@@ -85,3 +85,47 @@ variable "dmarc_report_address" {
   default     = "jackwkelliher@gmail.com"
   description = "Where DMARC aggregate reports go."
 }
+
+# ── inbound mail via addy.io ─────────────────────────────────────────
+
+variable "addy_inbound_enabled" {
+  type        = bool
+  default     = false
+  description = "Publish the addy.io apex MX records so the domain can receive mail."
+}
+
+variable "addy_sending_enabled" {
+  type        = bool
+  default     = false
+  description = "Publish the apex SPF and both DKIM CNAMEs so aliases can send and reply."
+}
+
+variable "addy_verify_token" {
+  type        = string
+  default     = ""
+  description = <<-EOT
+    The aa-verify value addy.io shows in its Check DNS records dialog. Unique
+    per domain add, so it cannot be derived or reused. Empty publishes no
+    ownership record.
+  EOT
+}
+
+variable "addy_mx_hosts" {
+  type = map(string)
+  default = {
+    "10" = "mail.anonaddy.me"
+    "20" = "mail2.anonaddy.me"
+  }
+  description = "addy.io inbound mail exchangers, keyed by priority."
+}
+
+variable "addy_spf_qualifier" {
+  type        = string
+  default     = "~all"
+  description = <<-EOT
+    Trailing qualifier on the apex SPF record. addy.io documents -all. This
+    defaults to ~all because a hard fail at the apex silently discards mail
+    from any sender not yet accounted for. Flip to -all once alignment is
+    confirmed in DMARC reports.
+  EOT
+}
